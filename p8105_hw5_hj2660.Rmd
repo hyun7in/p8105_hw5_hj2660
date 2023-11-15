@@ -10,60 +10,66 @@ library(tidyverse)
 ```
 
 # Problem 1
-Describe the raw data. 
+
 ```{r}
-homocide_df = read.csv("data-homicides-master/homicide-data.csv") 
+homicide_df = 
+  read_csv("data-homicides-master/homicide-data.csv", na = c("", "NA", "Unknown")) %>%
+  mutate(
+    city_state = str_c(city, state, sep = ", "),
+    resolution = case_when(
+      disposition == "Closed without arrest" ~ "unsolved",
+      disposition == "Open/No arrest"        ~ "unsolved",
+      disposition == "Closed by arrest"      ~ "solved"
+    )
+  ) %>% 
+  filter(city_state != "Tulsa, AL") 
 ```
 
-Create a city_state variable (e.g. “Baltimore, MD”) and then summarize within cities to obtain the total number of homicides and the number of unsolved homicides (those for which the disposition is “Closed without arrest” or “Open/No arrest”).
-```{r}
-tidy_homocide = homocide_df |>
-  mutate(city_state = str_c(city, state, sep = ","))
 
-sum_homocide = tidy_homocide |>
-  group_by(city_state) |>
+```{r}
+city_homicide_df = 
+  homicide_df %>% 
+  select(city_state, disposition, resolution) %>% 
+  group_by(city_state) %>% 
   summarize(
-    total_homocides = n(),
-    total_unsolved_homocides = sum(disposition %in% c("Closed without arrest", "Open/No arrest"))
-  )
-
-sum_homocide
+    hom_total = n(),
+    hom_unsolved = sum(resolution == "unsolved"))
 ```
-For the city of Baltimore, MD, use the prop.test function to estimate the proportion of homicides that are unsolved; save the output of prop.test as an R object, apply the broom::tidy to this object and pull the estimated proportion and confidence intervals from the resulting tidy dataframe.
+
+
 ```{r}
-baltimore_df =
-  sum_homocide |>
-  filter(city_state == "Baltimore,MD") 
+bmore_test = 
+  prop.test(
+    x = filter(city_homicide_df, city_state == "Baltimore, MD") %>% pull(hom_unsolved),
+    n = filter(city_homicide_df, city_state == "Baltimore, MD") %>% pull(hom_total)) 
 
-baltimore_result = prop.test(
-  x = baltimore_df$total_unsolved_homocides,
-  n = baltimore_df$total_homocides)
-
-#apply broom::tidy and pull the estimated proportion and CI intervals
-baltimore_tidy_result =
-  broom::tidy(baltimore_result) |>
-  select(estimate, conf.low, conf.high)
-
-baltimore_tidy_result
+broom::tidy(bmore_test) %>% 
+  knitr::kable(digits = 3)
 ```
-The estimated proportion is `r baltimore_tidy_result |> pull(estimate) |> round(3)`, and its 95% confidence interval is [`r baltimore_tidy_result |> pull(conf.low) |> round(3)`, `r baltimore_tidy_result |> pull(conf.high) |> round(3)`].
 
-Now run prop.test for each of the cities in your dataset, and extract both the proportion of unsolved homicides and the confidence interval for each. Do this within a “tidy” pipeline, making use of purrr::map, purrr::map2, list columns and unnest as necessary to create a tidy dataframe with estimated proportions and CIs for each city.
 ```{r}
-city_prop = sum_homocide |>
-  group_by(city_state)
-
+test_results = 
+  city_homicide_df %>% 
+  mutate(
+    prop_tests = map2(hom_unsolved, hom_total, \(x, y) prop.test(x = x, n = y)),
+    tidy_tests = map(prop_tests, broom::tidy)) %>% 
+  select(-prop_tests) %>% 
+  unnest(tidy_tests) %>% 
+  select(city_state, estimate, conf.low, conf.high) %>% 
+  mutate(city_state = fct_reorder(city_state, estimate))
 ```
 
-
-Create a plot that shows the estimates and CIs for each city – check out geom_errorbar for a way to add error bars based on the upper and lower limits. Organize cities according to the proportion of unsolved homicides.
+```{r}
+test_results %>% 
+  mutate(city_state = fct_reorder(city_state, estimate)) %>% 
+  ggplot(aes(x = city_state, y = estimate)) + 
+  geom_point() + 
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high)) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
 
 # Problem 2
-This zip file contains data from a longitudinal study that included a control arm and an experimental arm. Data for each participant is included in a separate file, and file names include the subject ID and arm.
-
-Create a tidy dataframe containing data from all participants, including the subject ID, arm, and observations over time:
-
-Start with a dataframe containing all file names; the list.files function will help
+Combine files from a study that includes a control arm and an experimental arm.
 ```{r message = FALSE, warning= FALSE}
 comb_df = 
   tibble(
@@ -73,10 +79,9 @@ comb_df =
   mutate(data = map(path, read_csv)) |> 
   unnest()
 ```
+Create a data frame by collecting file names and paths using `list.files`. Use `purrr::map` to import each CSV file into the data frame, saving their data as a new variable within the frame.
 
-Iterate over file names and read in data for each subject using purrr::map and saving the result as a new variable in the dataframe
-
-Tidy the result; manipulate file names to include control arm and subject ID, make sure weekly observations are “tidy”, and do any other tidying that’s necessary
+Tidy the dataset
 ```{r}
 tidy_df = comb_df |> 
   mutate(
@@ -90,7 +95,7 @@ tidy_df = comb_df |>
 tidy_df
 ```
 
-Make a spaghetti plot showing observations on each subject over time, and comment on differences between groups.
+Make a spaghetti plot
 ```{r}
 spagetti_plot = tidy_df |>
   ggplot(aes(x = week, y = observation, color = ID)) +
@@ -102,7 +107,6 @@ spagetti_plot = tidy_df |>
 
 spagetti_plot
 ```
-
 Within the control group, observations for each subject fluctuate around a consistent value, while the experimental group exhibits a noticeable trend of increasing observations among subjects as the weeks progress.
 
 ## Problem 3
@@ -111,7 +115,7 @@ Within the control group, observations for each subject fluctuate around a consi
 set.seed(12345)
 ```
 
-We define a function that conducts a one-sample t-test with parameters set to n = 30, mu = 0, sigma = 5, and a significance level of 0.05.
+We define a function that conducts a `one-sample t-test` with parameters set to *n = 30, mu = 0, sigma = 5, and a significance level of 0.05*.
 ```{r}
 t_test_sim = function(n = 30, mu = mu, sd = 5) {
   data = tibble(
@@ -154,15 +158,48 @@ sim_results_all =
 ```
 
 
-Make a plot showing the proportion of times the null was rejected (the power of the test) on the y axis and the true value of μ
- on the x axis. Describe the association between effect size and power.
-Make a plot showing the average estimate of μ̂ 
- on the y axis and the true value of μ
- on the x axis. Make a second plot (or overlay on the first) the average estimate of μ̂ 
- only in samples for which the null was rejected on the y axis and the true value of μ
- on the x axis. Is the sample average of μ̂ 
- across tests for which the null is rejected approximately equal to the true value of μ
-? Why or why not?
+Make a plot showing the proportion of times the null was rejected (the power of the test) on the y axis and the true value of μ on the x axis. Describe the association between effect size and power.
+```{r}
+sim_results_all |>
+  mutate(null_rejected = as.integer(p_value < 0.05)) |>
+  group_by(mu) |>
+  summarize(proportion = mean(null_rejected)) |>
+  ggplot(aes(x = mu, y = proportion)) +
+  geom_point() +
+  geom_line() +
+  labs(
+    title = "Power vs True μ",
+    x = "True μ",
+    y = "Power") +
+  theme_minimal()
+```
+The power increases as the true value of µ rises. Once the true value of µ exceeds 4, the power approximates at 1. However, when the true value of µ is small, the power remains consistently low.
+
+```{r}
+all_avg =
+  sim_results_all |>
+  group_by(mu) |>
+  summarize(mean_mu = mean(mu_hat))
+
+rej_avg =
+  sim_results_all |>
+  filter(p_value < 0.05) |>
+  group_by(mu) |>
+  summarize(mean_mu = mean(mu_hat))
+
+ggplot(all_avg, aes(x = mu, y = mean_mu)) +
+  geom_line() +
+  geom_line(data = rej_avg, aes(y = mean_mu), color = "blue") +
+  labs(
+    title = "Comparison of Average Estimate of μ̂ for True μ (Black) vs Rejected μ (Blue)",
+    x = "True μ",
+    y = "Average Estimate of μ̂"
+  ) +
+  theme_minimal()
+```
+The plot illustrates two lines: a black line representing all samples where the average estimate of μ is very close to the true value, and a blue line representing samples with rejected null hypotheses (p-value < 0.05). 
+
+For a true μ of 0, the average estimate of μ_hat across rejected tests is approximately not equal to the true μ. When the true mean is between 1 and 4, average estimates of rejected tests consistently exceed the true mean, suggesting low power at small effect sizes. When the true mean exceeds 4, the average estimates align closely with the true mean. The average μ_hat values of rejected tests diverge from the true μ values between 0 and 3 but begin to approximate them around 4.
 
 
 
